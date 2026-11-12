@@ -37,7 +37,7 @@ jobs:
           if [ "$GITHUB_REPOSITORY" = 'yaqwsx/jlcparts-dev' ]; then
             export BASEURL=https://jlcparts-dev.honzamrazek.cz
           else
-            export BASEURL=https://yaqwsx.github.io/jlcparts
+            export BASEURL=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}
           fi
           npm install --silent
           NODE_ENV=production PUBLIC_URL=${BASEURL} npm run build
@@ -55,6 +55,7 @@ jobs:
           WORKFLOW_EVENT_NAME: ${{ github.event_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MERGE_CACHE_FROM: ${{ inputs.merge_cache_from }}
+          MIRROR_OF: ${{ vars.MIRROR_OF }}
         run: |
           set -x
           sudo pip3 install -e .
@@ -62,7 +63,7 @@ jobs:
           if [ "$GITHUB_REPOSITORY" = 'yaqwsx/jlcparts-dev' ]; then
             export BASEURL=https://jlcparts-dev.honzamrazek.cz
           else
-            export BASEURL=https://yaqwsx.github.io/jlcparts
+            export BASEURL=https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}
           fi
           export DATAURL=${BASEURL}/data
 
@@ -80,11 +81,11 @@ jobs:
             esac
           }
 
-          have_cache=0
-          if fetch_published cache.zip; then
-            have_cache=1
-            downloaded_parts=()
-            part=1
+          # Download and extract the cache published at DATAURL. Returns 1
+          # when there is none.
+          fetch_cache() {
+            fetch_published cache.zip || return 1
+            local downloaded_parts=() part=1 suffix name
             while true; do
               if [ "$part" -le 99 ]; then
                 suffix=$(printf "%02d" "$part")
@@ -100,16 +101,23 @@ jobs:
               break
             done
 
-            7z x cache.zip
+            # Called as a condition, so errexit does not apply in here.
+            7z x cache.zip || exit 1
             rm -f cache.zip
             if [ ${#downloaded_parts[@]} -gt 0 ]; then
               rm -f "${downloaded_parts[@]}"
             fi
+          }
+
+          have_cache=0
+          if fetch_cache; then
+            have_cache=1
+          elif [ -n "$MIRROR_OF" ]; then
+            echo "No published cache found, the mirror starts from ${MIRROR_OF}"
+          elif [ "$WORKFLOW_EVENT_NAME" != "schedule" ]; then
+            echo "No published cache found; only scheduled runs may fetch a fresh database from JLC"
+            exit 1
           else
-            if [ "$WORKFLOW_EVENT_NAME" != "schedule" ]; then
-              echo "No published cache found; only scheduled runs may fetch a fresh database from JLC"
-              exit 1
-            fi
             echo "No published cache found, bootstrapping a fresh database"
           fi
 
@@ -140,6 +148,22 @@ jobs:
             published_rows=$deployed_rows
           fi
 
+          # A mirror has no JLC credentials and does not fetch. It takes the
+          # upstream cache, which is the freshest, and adds back the
+          # components that only its own cache still has.
+          if [ -n "$MIRROR_OF" ]; then
+            if [ -f cache.sqlite3 ]; then
+              mv cache.sqlite3 own.sqlite3
+            fi
+            DATAURL=https://${MIRROR_OF}/data
+            fetch_cache || { echo "No cache published at ${DATAURL}"; exit 1; }
+            jlcparts migratecache cache.sqlite3
+            if [ -f own.sqlite3 ]; then
+              jlcparts mergecache cache.sqlite3 own.sqlite3
+              rm -f own.sqlite3
+            fi
+          fi
+
           if [ -n "$MERGE_CACHE_FROM" ]; then
             mergeurl=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${MERGE_CACHE_FROM}/data
             mkdir merge
@@ -155,7 +179,7 @@ jobs:
             rm -rf merge
           fi
 
-          if [ "$WORKFLOW_EVENT_NAME" = "schedule" ]; then
+          if [ -z "$MIRROR_OF" ] && [ "$WORKFLOW_EVENT_NAME" = "schedule" ]; then
             # A fresh database must start from the beginning of the catalog,
             # so the published checkpoint is only used with a published cache.
             if [ "$have_cache" = 1 ]; then

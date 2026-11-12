@@ -2,6 +2,10 @@
 
 # JLC PCB SMD Assembly Component Catalogue
 
+> **This fork is an interim mirror** at https://rixnobis.github.io/jlcparts/,
+> kept until [yaqwsx/jlcparts#166](https://github.com/yaqwsx/jlcparts/pull/166)
+> restores the components the upstream catalogue lost in September.
+
 A better tool to browse the components offered by the [JLC PCB SMT Assembly
 Service](https://jlcpcb.com/smt-assembly).
 
